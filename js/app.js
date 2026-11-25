@@ -65,6 +65,34 @@
     }
     sem.section = section;
   }
+  const presetsFor = (level) => Object.entries(PRESETS).filter(([, p]) => p.level === level);
+  const nextLevel = (l) => LEVELS[Math.min(LEVELS.indexOf(l) + 1, LEVELS.length - 1)];
+  const electivesFor = (level) => Object.entries(SY.electives).filter(([g]) => g.includes(`(${level})`));
+  const semesterList = () => Object.values(state.semesters).sort((a, b) => LEVELS.indexOf(a.level) - LEVELS.indexOf(b.level) || a.startDate.localeCompare(b.startDate));
+
+  /* Shareable routine: compact JSON → base64url, carried in the link's #import= hash */
+  function encodeRoutine(sem) {
+    const r = { v: 1, l: sem.level, s: sem.section || '', d: {} };
+    for (const d of R.days) r.d[d.key] = sem.routine[d.key].map((x) => [x.p, x.span, x.code, x.teacher || '', x.room || '', x.note || '']);
+    const cus = {}; for (const [k, v] of Object.entries(sem.custom || {})) cus[k] = [v.title, v.sessional ? 1 : 0];
+    if (Object.keys(cus).length) r.c = cus;
+    return btoa(unescape(encodeURIComponent(JSON.stringify(r)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function decodeRoutine(code) {
+    try {
+      const m = String(code).match(/import=([A-Za-z0-9_-]+)/); const raw = (m ? m[1] : String(code).trim()).replace(/-/g, '+').replace(/_/g, '/');
+      const r = JSON.parse(decodeURIComponent(escape(atob(raw + '==='.slice((raw.length + 3) % 4)))));
+      if (!r || !r.d || !LEVELS.includes(r.l)) return null;
+      return r;
+    } catch { return null; }
+  }
+  function applyShared(sem, r) {
+    for (const d of R.days) sem.routine[d.key] = (r.d[d.key] || []).map(([p, span, code, teacher, room, note]) => ({ id: uid(), p, span, code, teacher, room, note, kind: span > 1 ? 'lab' : 'class' }));
+    for (const [k, [title, ses]] of Object.entries(r.c || {})) if (!SY.courses[k]) sem.custom[k] = { code: k, title, topics: [], credits: '', contact: '', sessional: !!ses };
+    if (r.s) sem.section = r.s;
+  }
+  const routineCount = (r) => Object.values(r.d || r.routine || {}).reduce((a, l) => a + l.length, 0);
+  let pendingImport = null;
 
   /* ---------------- course helpers ---------------- */
   const courseInfo = (code, sem = S()) => SY.courses[code] || (sem && sem.custom[code]) || { code, title: code, topics: [], credits: '', contact: '', sessional: false };
@@ -214,11 +242,80 @@
     }).join('') : `<span class="small muted" style="padding:6px 2px">Add classes in Routine to start tracking absences.</span>`;
   }
 
+  /* ---------------- Routine source (preset / shared link / blank) ---------------- */
+  function defaultSource(level) {
+    if (pendingImport && pendingImport.l === level) return 'shared';
+    const p = presetsFor(level)[0]; return p ? `p:${p[0]}:C` : 'blank';
+  }
+  function routineSourceChips(level, selected, act) {
+    const opts = [];
+    if (pendingImport && pendingImport.l === level) opts.push(['shared', `🔗 Shared routine · ${level}${pendingImport.s ? ` · Sec ${pendingImport.s}` : ''}`, `${routineCount(pendingImport)} classes from a classmate's link`]);
+    for (const [key, p] of presetsFor(level)) for (const sec of Object.keys(p.sections)) opts.push([`p:${key}:${sec}`, `Import ${p.label.split(' (')[0]} · Section ${sec}`, `Official routine${p.label.includes('(') ? ' ' + p.label.slice(p.label.indexOf('(')) : ''}, editable`]);
+    opts.push(['blank', 'Start with an empty routine', 'Tap any box to put a course in it']);
+    return `<div class="chips" style="flex-direction:column">${opts.map(([v, t, s]) => `<button class="chip ${selected === v ? 'on' : ''}" data-act="${act}" data-v="${v}"><b>${esc(t)}</b><br><span class="small muted">${esc(s)}</span></button>`).join('')}</div>
+      <label class="f">Got a routine link from a classmate?</label><input class="in" id="pasteLink" placeholder="Paste the classkoytay link here" autocomplete="off">`;
+  }
+  function applySource(sem, src) {
+    if (src === 'shared' && pendingImport) { applyShared(sem, pendingImport); pendingImport = null; return true; }
+    if (src && src.startsWith('p:')) { const [, key, sec] = src.split(':'); if (PRESETS[key]) { applyPreset(sem, key, sec); return true; } }
+    return false;
+  }
+
+  /* ---------------- Semesters ---------------- */
+  const ns = {};
+  function newSemSheet(level) {
+    const cur = S();
+    Object.assign(ns, { level: level || (cur ? nextLevel(cur.level) : '1-1'), section: cur ? cur.section : '', weekNo: 1, sat: iso(saturdayOf(dayKeyOfDate(now()) ? now() : addDays(now(), 2))) });
+    ns.source = defaultSource(ns.level);
+    drawNewSem();
+  }
+  function drawNewSem() {
+    const start = addDays(parseISO(ns.sat), -(ns.weekNo - 1) * 7);
+    const exists = semesterList().find((s) => s.level === ns.level);
+    openSheet(`<h3>New semester</h3><p class="muted small">Each semester keeps its own routine, attendance and CTs. Old semesters stay saved — switch back any time.</p>
+      <label class="f">Level</label><div class="big-choice">${LEVELS.map((l) => `<button class="chip ${ns.level === l ? 'on' : ''}" data-act="ns-level" data-v="${l}">${l}</button>`).join('')}</div>
+      ${exists ? `<p class="small" style="color:var(--warn);margin:8px 0 0">You already have “${esc(exists.label)}”. Creating another is fine (e.g. a retake).</p>` : ''}
+      <label class="f">Section</label><div class="seg">${['', 'A', 'B', 'C'].map((s) => `<button class="${ns.section === s ? 'on' : ''}" data-act="ns-sec" data-v="${s}">${s || 'None'}</button>`).join('')}</div>
+      <label class="f">Routine</label>${routineSourceChips(ns.level, ns.source, 'ns-src')}
+      <label class="f">Running week</label><div class="stepper"><button data-act="ns-week" data-d="-1">−</button><div class="val">${ns.weekNo}</div><button data-act="ns-week" data-d="1">+</button></div>
+      <label class="f">Week ${ns.weekNo} starts on (Saturday)</label><input class="in" type="date" id="nsSat" value="${ns.sat}">
+      <p class="small muted" style="margin-top:10px">→ Week 1 = ${fmtD(start)} · Week 14 ends ${fmtD(addDays(start, 13 * 7 + 4))}</p>
+      <div class="acts"><button class="btn primary" data-act="ns-create">Create ${ns.level} semester</button></div>`);
+  }
+  function semSheet() {
+    const cur = S();
+    openSheet(`<h3>Your semesters</h3><p class="muted small">Tap one to switch. Attendance, CTs and routine are kept separately for each.</p>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">${semesterList().map((s) => {
+        const codes = scheduledCourses(s); const abs = codes.reduce((a, c) => a + stats(c, s).Ae, 0);
+        return `<button class="card row" style="text-align:left;margin:0;${s.id === cur.id ? 'border-color:var(--accent)' : ''}" data-act="sem-switch" data-id="${s.id}">
+          <span class="tag" style="font:700 14px 'Space Grotesk';padding:8px 10px">${esc(s.level)}</span>
+          <span class="sp"><b>${esc(s.label)}${s.section ? ` · Sec ${esc(s.section)}` : ''}</b><br><span class="small muted">${weekLabel(s)} · ${codes.length} course${codes.length === 1 ? "" : "s"} · ${abs} absence${abs === 1 ? "" : "s"}</span></span>
+          ${s.id === cur.id ? '<span class="tag good">current</span>' : '<span class="faint">›</span>'}</button>`;
+      }).join('')}</div>
+      <div class="acts"><button class="btn primary" data-act="new-sem">＋ New semester</button></div>`);
+  }
+  function shareRoutine() {
+    const sem = S();
+    if (!routineCount(sem)) { toast('Your routine is empty — add classes first', '!'); return; }
+    const url = `${location.origin}${location.pathname}#import=${encodeRoutine(sem)}`;
+    const text = `classkoytay routine · ${sem.level}${sem.section ? ' Sec ' + sem.section : ''} — open to import`;
+    if (navigator.share) navigator.share({ title: 'classkoytay routine', text, url }).catch(() => {});
+    else navigator.clipboard?.writeText(url).then(() => toast('Routine link copied — send it to your section', '🔗'), () => prompt('Copy this link', url));
+  }
+  function importSheet(r) {
+    const cur = S(), same = cur && cur.level === r.l;
+    openSheet(`<h3>Import shared routine</h3><p class="muted small">${esc(r.l)}${r.s ? ` · Section ${esc(r.s)}` : ''} · ${routineCount(r)} classes</p>
+      <div class="card" style="margin-top:10px">${R.days.map((d) => `<div class="row small" style="padding:4px 0"><b style="width:40px">${d.short}</b><span class="muted">${(r.d[d.key] || []).map((x) => esc(x[2])).join(' · ') || '—'}</span></div>`).join('')}</div>
+      <div class="acts">${same ? `<button class="btn" data-act="imp-replace">Replace ${esc(cur.label)}</button>` : ''}<button class="btn primary" data-act="imp-new">New ${esc(r.l)} semester</button></div>`);
+  }
+
   /* ---------------- Onboarding ---------------- */
-  const onb = { step: 0, level: '2-2', preset: 'C', weekNo: null, weekSat: null };
+  const onb = { step: 0, level: '2-2', preset: null, weekNo: null, weekSat: null };
   function viewOnboarding() {
     const t = now(), curSat = saturdayOf(t);
     if (onb.weekNo == null) { onb.weekNo = 1; onb.weekSat = iso(curSat); }
+    if (pendingImport && !onb._imp) { onb._imp = 1; onb.level = pendingImport.l; onb.preset = 'shared'; }
+    if (onb.preset == null) onb.preset = defaultSource(onb.level);
     const dots = `<div class="dots">${[0, 1, 2, 3].map((i) => `<i class="${i === onb.step ? 'on' : ''}"></i>`).join('')}</div>`;
     if (onb.step === 0) return `<div class="onb page">
       <div class="hero-mark"></div>
@@ -230,13 +327,10 @@
       <div class="big-choice">${LEVELS.map((l) => `<button class="chip ${onb.level === l ? 'on' : ''}" data-act="onb-level" data-v="${l}">${l}</button>`).join('')}</div>
       ${dots}<div class="row"><button class="btn" data-act="onb-back">Back</button><button class="btn primary sp" data-act="onb-next">Continue</button></div></div>`;
     if (onb.step === 2) {
-      const has = onb.level === '2-2';
       return `<div class="onb page"><h1>Your <em>routine</em></h1>
-      <p class="muted">RUET routines change every semester, so you fill the 8 AM – 5 PM boxes yourself.${has ? ' For 2-2 you can also start from the 2024-series routine (effective 14 Nov 2026) and edit it.' : ''}</p>
-      <div class="chips" style="flex-direction:column">
-        ${has ? ['A', 'B', 'C'].map((s) => `<button class="chip ${onb.preset === s ? 'on' : ''}" data-act="onb-preset" data-v="${s}"><b>Import 24 series · Section ${s}</b><br><span class="small muted">All classes and labs pre-filled, editable</span></button>`).join('') : ''}
-        <button class="chip ${onb.preset === 'blank' || !has ? 'on' : ''}" data-act="onb-preset" data-v="blank"><b>Start with an empty routine</b><br><span class="small muted">Tap any box to put a course in it</span></button>
-      </div>${dots}<div class="row"><button class="btn" data-act="onb-back">Back</button><button class="btn primary sp" data-act="onb-next">Continue</button></div></div>`;
+      <p class="muted">RUET routines change every semester, so you fill the 8 AM – 5 PM boxes yourself — or use a routine a classmate shared with you.</p>
+      ${routineSourceChips(onb.level, onb.preset, 'onb-preset')}
+      ${dots}<div class="row"><button class="btn" data-act="onb-back">Back</button><button class="btn primary sp" data-act="onb-next">Continue</button></div></div>`;
     }
     const startPreview = addDays(parseISO(onb.weekSat), -(onb.weekNo - 1) * 7);
     return `<div class="onb page"><h1>Which <em>week</em> is running?</h1>
@@ -276,6 +370,7 @@
           <div class="stat"><b class="num">${cts.length ? daysUntil(cts[0].date) : '–'}</b><span>${cts.length ? `days to ${esc(cts[0].code)} CT` : 'no CT planned'}</span></div>
         </div>
       </section>
+      ${weekOf(t, sem) > sem.weeks ? `<div class="card row" style="--i:1;margin-top:12px"><span style="font-size:28px">🎓</span><div class="sp"><b>${esc(sem.label)} is finished</b><div class="small muted">Start ${nextLevel(sem.level)} — this semester stays saved.</div></div><button class="btn primary sm" data-act="new-sem" data-v="${nextLevel(sem.level)}">Start ${nextLevel(sem.level)}</button></div>` : ''}
       ${risky.length ? `<div class="note warn" style="--i:1;margin-top:12px">⚠️ ${risky.map((r) => `<b>${esc(r.c)}</b> ${r.s.left90 < 0 ? `is below 90% (${r.s.finalMarks}/10 max now)` : r.s.left90 === 0 ? 'has <b>no</b> absences left for 10/10' : 'has only 1 absence left for 10/10'}`).join(' · ')}</div>` : ''}
       <h2 class="sec" style="--i:2">Today${dayKeyOfDate(t) && todays.length ? `<span class="sp"></span><button class="btn sm" data-act="toggle-off" data-iso="${iso(t)}">${isOff ? 'Undo holiday' : 'Mark holiday'}</button>` : ''}</h2>
       ${todays.length ? `<div class="timeline">${todays.map((i, n) => classCard(i, n + 3, t)).join('')}</div>` : `<div class="card empty" style="--i:3"><div class="big">☕</div><div>No classes scheduled today.</div></div>`}
@@ -356,7 +451,17 @@
         <button class="icon-btn" data-act="rweek" data-d="1" aria-label="Next week"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button></div>`}
       <div class="grid-scroll"><div class="rgrid">${head}${cellsHtml}</div></div>
       <div class="row wrap small muted" style="margin-top:10px;gap:14px">${tmpl ? '<span>Break 10:30–10:50 · Lunch 1:20–2:30 (striped columns)</span>' : '<span><span class="st P" style="display:inline-grid;width:14px;height:14px;border-radius:4px;color:#fff;font-size:9px">✓</span> present</span><span><span class="st A" style="display:inline-grid;width:14px;height:14px;border-radius:4px;color:#fff;font-size:9px">✕</span> absent</span><span>Tap a class to mark or add a CT · tap a day to mark holiday</span>'}</div>
-      ${tmpl ? `<div class="row wrap" style="margin-top:16px"><button class="btn" data-act="import-preset">⤓ Import 24-series routine</button><button class="btn" data-act="add-custom-course">＋ Custom course</button><button class="btn danger" data-act="clear-routine">Clear routine</button></div>` : ''}`;
+      ${tmpl ? `<div class="row wrap" style="margin-top:16px"><button class="btn" data-act="share-routine">🔗 Share with section</button><button class="btn" data-act="import-preset">⤓ Import routine</button><button class="btn" data-act="add-custom-course">＋ Custom course</button><button class="btn danger" data-act="clear-routine">Clear routine</button></div>` : ''}`;
+  }
+  function coursePickerOptions(sem, selected) {
+    const opt = (c) => `<option value="${esc(c)}" ${c === selected ? 'selected' : ''}>${esc(c)} — ${esc(courseInfo(c, sem).title)}</option>`;
+    const plan = SY.plan[sem.level] || [], used = new Set(plan), groups = [];
+    groups.push([`${sem.level} courses`, plan]);
+    for (const [g, l] of electivesFor(sem.level)) { groups.push([g, l]); l.forEach((c) => used.add(c)); }
+    const custom = Object.keys(sem.custom || {}); custom.forEach((c) => used.add(c));
+    if (custom.length) groups.push(['Custom', custom]);
+    groups.push(['Other semesters (retake / backlog)', Object.keys(SY.courses).filter((c) => !used.has(c))]);
+    return groups.filter(([, l]) => l.length).map(([g, l]) => `<optgroup label="${esc(g)}">${l.map(opt).join('')}</optgroup>`).join('');
   }
   function slotSheet(day, p, slot = null) {
     const sem = S(), courses = semCourses(sem);
@@ -364,7 +469,7 @@
     const dayName = R.days[dayIdx(day)].name;
     openSheet(`<h3>${slot ? 'Edit class' : 'Add class'}</h3><p class="muted small">${dayName} · starts period ${s.p} (${fmt12(R.periods[s.p - 1].start)})</p>
       <label class="f">Course</label>
-      <select class="in" id="fCode">${courses.map((c) => `<option value="${esc(c)}" ${c === s.code ? 'selected' : ''}>${esc(c)} — ${esc(courseInfo(c).title)}</option>`).join('')}</select>
+      <select class="in" id="fCode">${coursePickerOptions(sem, s.code)}</select>
       <label class="f">Start period</label>
       <select class="in" id="fP">${R.periods.map((x) => `<option value="${x.n}" ${x.n === s.p ? 'selected' : ''}>Period ${x.n} · ${fmt12(x.start)}</option>`).join('')}</select>
       <label class="f">Length</label>
@@ -574,8 +679,9 @@
       <h2 class="sec" style="--i:0">Semester</h2>
       <div class="card" style="--i:1">
         <div class="set-row"><div class="t"><b>${esc(sem.label)}</b><span>Week 1 started ${fmtD(semStart(sem))} · ${sem.weeks} weeks</span></div><button class="btn sm" data-act="week-sheet">Change week</button></div>
-        <div class="set-row"><div class="t"><b>Switch semester</b><span>Each semester keeps its own routine, attendance and CTs</span></div>
-          <select class="in" style="width:auto" id="semSwitch">${Object.values(state.semesters).map((s) => `<option value="${s.id}" ${s.id === sem.id ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</select></div>
+        <div class="set-row"><div class="t"><b>Switch semester</b><span>${Object.keys(state.semesters).length} saved · each keeps its own routine, attendance and CTs</span></div><button class="btn sm" data-act="sem-sheet">Semesters</button></div>
+        <div class="set-row"><div class="t"><b>Level</b><span>Decides which syllabus courses are offered</span></div><select class="in" style="width:96px" id="semLevel">${LEVELS.map((l) => `<option ${l === sem.level ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        <div class="set-row"><div class="t"><b>Section</b></div><select class="in" style="width:96px" id="semSec">${['', 'A', 'B', 'C'].map((x) => `<option value="${x}" ${x === (sem.section || '') ? 'selected' : ''}>${x || 'None'}</option>`).join('')}</select></div>
         <div class="set-row"><div class="t"><b>Rename</b></div><input class="in" style="width:180px" id="semName" value="${esc(sem.label)}"></div>
         <div class="set-row"><div class="t"><b>Weeks in semester</b><span>RUET standard is 14</span></div><input class="in" type="number" min="1" max="20" style="width:80px" id="semWeeks" value="${sem.weeks}"></div>
         <div class="row wrap" style="margin-top:12px"><button class="btn" data-act="new-sem">＋ New semester</button><button class="btn danger" data-act="del-sem">Delete this semester</button></div>
@@ -801,16 +907,33 @@
       case 'close-sheet': closeSheet(); break;
       case 'onb-next': onb.step++; render(); break;
       case 'onb-back': onb.step--; render(); break;
-      case 'onb-level': onb.level = el.dataset.v; if (onb.level !== '2-2') onb.preset = 'blank'; else onb.preset = 'C'; render(); break;
+      case 'onb-level': onb.level = el.dataset.v; onb.preset = defaultSource(onb.level); render(); break;
       case 'onb-preset': onb.preset = el.dataset.v; render(); break;
       case 'onb-week': onb.weekSat = $('#onbSat').value || onb.weekSat; onb.weekNo = Math.max(1, Math.min(20, onb.weekNo + Number(el.dataset.d))); render(); break;
       case 'onb-finish': {
         const sat = $('#onbSat').value || onb.weekSat; const satD = saturdayOf(parseISO(sat));
         const start = addDays(satD, -(onb.weekNo - 1) * 7);
         const s = newSemester({ level: onb.level, label: `${onb.level} Semester`, startDate: iso(start) });
-        if (onb.preset !== 'blank' && onb.level === '2-2') applyPreset(s, '2024-2-2', onb.preset);
-        state.onboarded = true; save(); go(s.routine.sat.length ? 'today' : 'routine'); ui.routineMode = s.routine.sat.length ? 'week' : 'template'; render(); toast('Welcome to classkoytay 🎉', '★'); break;
+        const filled = applySource(s, onb.preset);
+        state.onboarded = true; save(); ui.routineMode = filled ? 'week' : 'template'; go(filled ? 'today' : 'routine'); render(); toast('Welcome to classkoytay 🎉', '★'); break;
       }
+      case 'sem-sheet': semSheet(); break;
+      case 'sem-switch': state.active = el.dataset.id; ui.routineWeek = null; ui.sylTab = null; save(); closeSheet(); render(); toast(`Switched to ${S().label}`); break;
+      case 'ns-level': ns.level = el.dataset.v; ns.source = defaultSource(ns.level); drawNewSem(); break;
+      case 'ns-sec': ns.section = el.dataset.v; drawNewSem(); break;
+      case 'ns-src': ns.source = el.dataset.v; drawNewSem(); break;
+      case 'ns-week': ns.sat = $('#nsSat').value || ns.sat; ns.weekNo = Math.max(1, Math.min(20, ns.weekNo + Number(el.dataset.d))); drawNewSem(); break;
+      case 'ns-create': {
+        const satD = saturdayOf(parseISO($('#nsSat').value || ns.sat));
+        const s = newSemester({ level: ns.level, section: ns.section, startDate: iso(addDays(satD, -(ns.weekNo - 1) * 7)) });
+        if (ns.section) s.label = `${ns.level} Semester`;
+        const filled = applySource(s, ns.source); if (ns.section && !s.section) s.section = ns.section;
+        save(); closeSheet(); ui.routineWeek = null; ui.sylTab = null; ui.routineMode = filled ? 'week' : 'template'; go(filled ? 'today' : 'routine'); render();
+        toast(filled ? `${s.label} ready` : `${s.label} created — fill the routine`, '🎓'); break;
+      }
+      case 'share-routine': shareRoutine(); break;
+      case 'imp-replace': { const r = pendingImport; if (!r) break; const ok = sem.routine && confirm(`Replace the weekly routine of ${sem.label}?`); if (ok) { applyShared(sem, r); pendingImport = null; save(); closeSheet(); ui.routineMode = 'week'; go('routine'); render(); toast('Routine imported', '🔗'); } break; }
+      case 'imp-new': { const r = pendingImport; if (!r) break; closeSheet(); newSemSheet(r.l); ns.section = r.s || ns.section; ns.source = 'shared'; drawNewSem(); break; }
       case 'mark': {
         const [d, id] = el.dataset.k.split('|'); const date = parseISO(d); const key = dayKeyOfDate(date); const slot = sem.routine[key].find((x) => x.id === id);
         const inst = mkInst(sem, date, weekOf(date), key, slot); const cur = statusOf(inst);
@@ -841,8 +964,8 @@
         save(); closeSheet(); softRefresh(); toast('Routine saved'); break;
       }
       case 'del-slot': sem.routine[el.dataset.day] = sem.routine[el.dataset.day].filter((x) => x.id !== el.dataset.id); save(); closeSheet(); softRefresh(); toast('Removed'); break;
-      case 'import-preset': openSheet(`<h3>Import routine</h3><p class="muted small">2024 Series (EEE) · effective 14 Nov 2026. This replaces the current weekly routine; attendance already marked for removed classes is kept but hidden.</p><div class="chips" style="flex-direction:column">${['A', 'B', 'C'].map((s) => `<button class="chip" data-act="do-import" data-v="${s}"><b>Section ${s}</b></button>`).join('')}</div>`); break;
-      case 'do-import': applyPreset(sem, '2024-2-2', el.dataset.v); if (sem.level !== '2-2') sem.level = '2-2'; save(); closeSheet(); softRefresh(); toast(`Section ${el.dataset.v} routine imported`); break;
+      case 'import-preset': openSheet(`<h3>Import routine</h3><p class="muted small">Replaces the current weekly routine of ${esc(sem.label)}. Attendance already marked for removed classes is kept but hidden.</p>${routineSourceChips(sem.level, null, 'do-import').replace(/<button class="chip[^"]*" data-act="do-import" data-v="blank">[\s\S]*?<\/button>/, '')}`); break;
+      case 'do-import': if (applySource(sem, el.dataset.v)) { save(); closeSheet(); softRefresh(); toast('Routine imported'); } break;
       case 'clear-routine': if (confirm('Remove every class from this weekly routine?')) { for (const d of R.days) sem.routine[d.key] = []; save(); softRefresh(); } break;
       case 'add-custom-course': openSheet(`<h3>Custom course</h3><p class="muted small">For courses not in the EEE syllabus (e.g. retake or another department).</p><label class="f">Code</label><input class="in" id="ccCode" placeholder="e.g. CSE 2101"><label class="f">Title</label><input class="in" id="ccTitle" placeholder="Course title"><label class="row small" style="margin-top:12px"><input type="checkbox" id="ccLab"> Sessional / lab</label><div class="acts"><button class="btn primary" data-act="save-custom">Add</button></div>`); break;
       case 'save-custom': { const code = $('#ccCode').value.trim().replace(/\s+/g, ' '); if (!code) break; sem.custom[code] = { code, title: $('#ccTitle').value.trim() || code, topics: [], credits: '', contact: '', sessional: $('#ccLab').checked }; save(); closeSheet(); toast(`${code} added — now put it in a box`); break; }
@@ -865,8 +988,7 @@
       case 'week-sheet': weekSheet(); break;
       case 'wk': ctDraft._sat = $('#wkSat').value || ctDraft._sat; ctDraft._w = Math.max(1, Math.min(S().weeks, ctDraft._w + Number(el.dataset.d))); drawWeekSheet(); break;
       case 'wk-save': { const sat = saturdayOf(parseISO($('#wkSat').value || ctDraft._sat)); sem.startDate = iso(addDays(sat, -(ctDraft._w - 1) * 7)); ui.routineWeek = null; save(); closeSheet(); softRefresh(); toast(`Week ${ctDraft._w} starts ${fmtD(sat)}`); break; }
-      case 'new-sem': openSheet(`<h3>New semester</h3><label class="f">Level</label><div class="big-choice">${LEVELS.map((l) => `<button class="chip" data-act="ns-level" data-v="${l}">${l}</button>`).join('')}</div><p class="small muted" style="margin-top:12px">The new semester starts at week 1 this Saturday — change it afterwards with the week chip.</p>`); break;
-      case 'ns-level': { const sat = saturdayOf(addDays(now(), 6)); const s = newSemester({ level: el.dataset.v, startDate: iso(sat) }); save(); closeSheet(); ui.routineMode = 'template'; ui.sylTab = null; go('routine'); toast(`${s.label} created — fill the routine`); break; }
+      case 'new-sem': newSemSheet(el.dataset.v || null); break;
       case 'del-sem': if (Object.keys(state.semesters).length < 2) { toast('Create another semester first', '!'); break; } if (confirm(`Delete ${sem.label} with all its attendance and CTs?`)) { delete state.semesters[sem.id]; state.active = Object.keys(state.semesters)[0]; save(); render(); } break;
       case 'test-notif': if (!('Notification' in window) || Notification.permission !== 'granted') { await enableNotifications(true); } if (Notification.permission === 'granted') { const a = plannedAlerts(7).find((x) => x.id.startsWith('dg-')); showNotif(a || { title: 'classkoytay', body: 'Notifications are working 🎉', tag: 'test' }); } break;
       case 'export-ics': exportICS(); break;
@@ -889,6 +1011,16 @@
       case 'onbSat': onb.weekSat = t.value; render(); break;
       case 'wkSat': ctDraft._sat = t.value; drawWeekSheet(); break;
       case 'semSwitch': state.active = t.value; ui.routineWeek = null; ui.sylTab = null; save(); render(); break;
+      case 'semLevel': sem.level = t.value; ui.sylTab = null; save(); render(); break;
+      case 'semSec': sem.section = t.value; save(); renderTop(); break;
+      case 'pasteLink': {
+        const r = decodeRoutine(t.value); if (!r) { toast('That is not a classkoytay routine link', '!'); break; }
+        pendingImport = r; toast(`Routine for ${r.l}${r.s ? ' Sec ' + r.s : ''} found`, '🔗');
+        if (!state.onboarded || !S()) { onb.level = r.l; onb.preset = 'shared'; render(); }
+        else if ($('#nsSat')) { ns.level = r.l; ns.source = 'shared'; if (r.s) ns.section = r.s; drawNewSem(); }
+        else importSheet(r);
+        break;
+      }
       case 'semName': sem.label = t.value.trim() || sem.label; save(); renderTop(); break;
       case 'semWeeks': sem.weeks = Math.max(1, Math.min(20, Number(t.value) || 14)); save(); render(); break;
       case 'notifyT': enableNotifications(t.checked); break;
@@ -923,8 +1055,16 @@
     navigator.serviceWorker.register('sw.js').then((r) => { swReg = r; }).catch(() => {});
     navigator.serviceWorker.addEventListener?.('message', () => {});
   }
+  function takeImportFromHash() {
+    if (!location.hash.startsWith('#import=')) return false;
+    const r = decodeRoutine(location.hash); history.replaceState(null, '', location.pathname + '#today'); route = 'today'; routeArg = null;
+    if (!r) { toast('Routine link is broken', '!'); return false; }
+    pendingImport = r; if (state.onboarded && S()) { render(); importSheet(r); } else render();
+    return true;
+  }
+  window.addEventListener('hashchange', takeImportFromHash);
   const h = location.hash.slice(1).split('/'); route = h[0] || 'today'; routeArg = h[1] ? decodeURIComponent(h[1]) : null;
-  render();
+  if (!takeImportFromHash()) render();
   if (state.settings.tracking && state.onboarded) startTracking();
   setInterval(tick, 20000); setTimeout(tick, 1500);
 

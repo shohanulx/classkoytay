@@ -1,5 +1,5 @@
 /* classkoytay service worker — offline shell + background reminders */
-const CACHE = 'classkoytay-v1';
+const CACHE = 'classkoytay-v2';
 const SHELL = ['./', 'index.html', 'css/style.css', 'js/app.js', 'js/syllabus.js', 'js/presets.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
