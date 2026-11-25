@@ -1,6 +1,8 @@
 # classkoytay
 
-An app for RUET students: your class routine, attendance marks, class tests (CTs) and syllabus in one place. It's an installable web app (PWA) with no build step, and all your data stays on your phone.
+An app for RUET students: your class routine, attendance marks, class tests (CTs) and syllabus in one place. It runs as an **Android app** and as a website, and you can sign in with Google so your data is backed up.
+
+**Get the Android app:** open [Releases](https://github.com/shohanulx/classkoytay/releases/latest) on your phone, download `classkoytay.apk` and open it. If Android asks, allow "Install unknown apps". **Web version:** https://shohanulx.github.io/classkoytay/
 
 ## What it does
 - **Every semester (1-1 to 4-2)**: tap the semester name at the top to switch between semesters or start a new one (level, section, routine, running week). Each semester keeps its own routine, attendance and CTs, and old ones stay saved. The course picker shows that semester's syllabus courses, the 4th-year electives, and every other course for retakes. When week 14 ends, Today offers to start the next semester.
@@ -11,18 +13,23 @@ An app for RUET students: your class routine, attendance marks, class tests (CTs
 - **CTs**: choose a course and a week, then the exact routine slot, plus the syllabus topics. You get a reminder the day before and a 7 AM reminder on the day. The CT mark (out of 20) uses your best 3 of 4 scores.
 - **Syllabus**: every course from the RUET EEE 2024 syllabus, with search, grouped by semester, plus electives and the marks breakdown.
 - **Auto attendance by location**: during class time, if you enter the EEE (Academic Bldg-02) or CSE (Academic Bldg-01) building, the class is marked present. If tracking ran for the whole class and you never went in, it is marked absent. Being elsewhere on campus doesn't count. A manual mark always overrides an automatic one.
+- **Google login + backup**: sign in from Settings, or with "Continue with Google" on the first screen. Your routine, attendance and CTs are saved to your Google account through Firebase, and each account can only read its own data. On a new phone, sign in and everything comes back. Your location is never uploaded.
 - **Reminders**: a summary of tomorrow's classes, labs and CTs at a time you choose, a reminder N minutes before each class, and an `.ics` calendar export with alarms built in.
 
-## Run locally
-```
-python -m http.server 3020 --directory .
-```
-Then open http://localhost:3020
+## Android app
+- **Background attendance:** Android's own geofencing wakes the app when you enter or leave the EEE or CSE building, even when the app is closed or after a restart. Next time you open the app, it turns those events into present/absent marks. Set Location to **"Allow all the time"** when asked.
+- **Reminders:** scheduled on the phone for the next 10 days and refreshed each time you open the app. They ring even when the app is closed.
+- **Builds:** every push to `main` builds a signed APK with GitHub Actions (`.github/workflows/android.yml`) and publishes it as a Release. Signing uses the repo secrets `KEYSTORE_BASE64` and `KEYSTORE_PASSWORD`. The keystore itself is never committed. Keep the backup in `classkoytay-keys`, because every update must be signed with the same key.
 
-## Put it on your phone
-Location, notifications and installing the app all need **HTTPS**. You can host this folder free on GitHub Pages, Netlify Drop or Cloudflare Pages. Then open the link in Chrome on Android, choose ⋮ → **Add to Home screen**, and allow Location and Notifications.
+## Develop
+```
+corepack pnpm install
+node scripts/build-web.mjs                          # bundles src/bridge.js -> js/bridge.js, copies the web app to dist/
+node node_modules/@capacitor/cli/bin/capacitor sync android
+python -m http.server 3020                          # web version at http://localhost:3020
+```
 
-## Limits (web app)
-- Location tracking only runs **while the app is open** (it keeps the screen awake during tracking). When the app is closed, nothing gets auto-marked. Tick those classes by hand.
-- Notifications are reliable while the app is open, and when it's installed on Android (Chrome's periodic background sync). For alarms you can always count on, use **Settings → Add semester to phone calendar (.ics)**.
+## Limits (web version)
+- In the browser, location tracking only runs **while the page is open**. The Android app tracks in the background.
+- Browser notifications only show while the page is open or installed. The Android app's reminders always ring.
 - The building positions come from OpenStreetMap. To make them exact, stand inside each building once and tap **"I'm inside now"**.
