@@ -39,19 +39,18 @@ jobs:
 
       - name: Build signed release APK
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_B64 || secrets.KEYSTORE_BASE64 }}
           CK_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASS || secrets.KEYSTORE_PASSWORD }}
           CK_VERSION_CODE: ${{ github.run_number }}
           CK_VERSION_NAME: 1.${{ github.run_number }}
         run: |
-          if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::Add the KEYSTORE_BASE64 and KEYSTORE_PASSWORD repository secrets"; exit 1; fi
-          # Diagnostics (lengths only, never values): key text should be 3544 chars, password 24
-          echo "KEYSTORE_BASE64 length: $(printf '%s' "$KEYSTORE_BASE64" | tr -d ' \r\n\t' | wc -c) (expected 3544)"
-          echo "KEYSTORE_PASSWORD length: $(printf '%s' "$CK_KEYSTORE_PASSWORD" | tr -d '\r\n' | wc -c) (expected 24)"
-          # Strip any spaces / line breaks that sneak in when pasting the secret
-          printf '%s' "$KEYSTORE_BASE64" | tr -d ' \r\n\t' | base64 -d > "$RUNNER_TEMP/release.jks"
+          # The signing key is committed only in AES-256 encrypted form (android/release.jks.enc).
+          # The single repository secret KEYSTORE_PASS (24 chars) decrypts it and unlocks it.
+          export CK_KEYSTORE_PASSWORD="$(printf '%s' "$CK_KEYSTORE_PASSWORD" | tr -d ' \r\n\t')"
+          echo "Password secret length: ${#CK_KEYSTORE_PASSWORD} (expected 24)"
+          if [ -z "$CK_KEYSTORE_PASSWORD" ]; then echo "::error::Add the KEYSTORE_PASS repository secret"; exit 1; fi
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in android/release.jks.enc -out "$RUNNER_TEMP/release.jks" -pass env:CK_KEYSTORE_PASSWORD \
+            || { echo "::error::KEYSTORE_PASS is wrong — could not decrypt the signing key"; exit 1; }
           export CK_KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
-          export CK_KEYSTORE_PASSWORD="$(printf '%s' "$CK_KEYSTORE_PASSWORD" | tr -d '\r\n')"
           # Print the key fingerprint (public) — must match the SHA-1 registered in Firebase for Google login
           keytool -list -v -keystore "$CK_KEYSTORE_FILE" -storepass "$CK_KEYSTORE_PASSWORD" | grep -E "SHA1:" || { echo "::error::Keystore or password secret is wrong"; exit 1; }
           cd android
