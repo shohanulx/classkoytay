@@ -48,8 +48,9 @@
   state.settings = Object.assign(defaults().settings, state.settings);
   const save = () => {
     try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { toast('Could not save — storage full?', '⚠'); }
-    queueForServiceWorker();
+    queueForServiceWorker(); scheduleCloud(); scheduleNativeAlerts();
   };
+  const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* ignore */ } };
   const S = () => state.semesters[state.active];
 
   function newSemester({ level, label, section, startDate, weeks = 14 }) {
@@ -321,7 +322,8 @@
       <div class="hero-mark"></div>
       <h1>Never lose a <em>mark</em> to attendance again.</h1>
       <p class="muted">classkoytay keeps your RUET routine, counts every absence against the syllabus rule (90% → 10 marks), reminds you of tomorrow's classes &amp; CTs, and can auto-mark you present when you walk into the EEE or CSE building.</p>
-      ${dots}<button class="btn primary block" data-act="onb-next">Let's set up</button></div>`;
+      ${dots}<button class="btn primary block" data-act="onb-next">Let's set up</button>
+      ${CLOUD.configured ? `<button class="btn block" style="margin-top:10px" data-act="cloud-login">${GOOGLE_G} Continue with Google — restore my data</button>` : ''}</div>`;
     if (onb.step === 1) return `<div class="onb page"><h1>Which <em>semester</em>?</h1>
       <p class="muted">Courses come from the RUET EEE syllabus. You can add more semesters later.</p>
       <div class="big-choice">${LEVELS.map((l) => `<button class="chip ${onb.level === l ? 'on' : ''}" data-act="onb-level" data-v="${l}">${l}</button>`).join('')}</div>
@@ -672,10 +674,11 @@
   /* ---------------- Settings ---------------- */
   function viewSettings() {
     const sem = S(), st = state.settings;
-    const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+    const perm = NATIVE ? (nativeNotifOk ? 'granted' : 'default') : 'Notification' in window ? Notification.permission : 'unsupported';
     const tr = trackerState();
     return `<button class="btn sm" data-act="back" style="margin-top:6px">← Back</button><h1 class="page-title">Settings</h1><p class="page-sub">Semester, week, reminders and campus tracking.</p>
       <div class="stagger">
+      ${accountCard()}
       <h2 class="sec" style="--i:0">Semester</h2>
       <div class="card" style="--i:1">
         <div class="set-row"><div class="t"><b>${esc(sem.label)}</b><span>Week 1 started ${fmtD(semStart(sem))} · ${sem.weeks} weeks</span></div><button class="btn sm" data-act="week-sheet">Change week</button></div>
@@ -694,12 +697,14 @@
         <div class="set-row"><div class="t"><b>Before each class</b><span>minutes</span></div><select class="in" id="beforeT" style="width:100px">${[0, 5, 10, 15, 30].map((m) => `<option value="${m}" ${m === st.beforeMin ? 'selected' : ''}>${m ? m + ' min' : 'Off'}</option>`).join('')}</select></div>
         <div class="set-row"><div class="t"><b>CT morning alert</b><span>7:00 AM on CT day</span></div><label class="switch"><input type="checkbox" id="ctMorningT" ${st.ctMorning ? 'checked' : ''}><span></span></label></div>
         <div class="row wrap" style="margin-top:12px"><button class="btn" data-act="test-notif">Send test notification</button><button class="btn" data-act="export-ics">⤓ Add semester to phone calendar (.ics)</button></div>
-        <p class="small muted" style="margin:10px 0 0">Reminders fire while classkoytay is open or installed (Add to Home screen). For guaranteed alarms even when the app is closed, also import the .ics file into Google Calendar — it contains every class and CT with alarms.</p>
+        <p class="small muted" style="margin:10px 0 0">${NATIVE ? 'Reminders are scheduled on your phone for the next 10 days and refresh every time you open the app — they ring even when classkoytay is closed.' : 'Reminders fire while classkoytay is open or installed (Add to Home screen). For guaranteed alarms, get the Android app or import the .ics file into Google Calendar.'}</p>
       </div>
 
       <h2 class="sec" style="--i:4">Auto attendance by location</h2>
       <div class="card" style="--i:5">
         <div class="set-row"><div class="t"><b>Track me during class time</b><span>${tr.detail}</span></div><label class="switch"><input type="checkbox" id="trackT" ${st.tracking ? 'checked' : ''}><span></span></label></div>
+        ${NATIVE && state.settings.tracking && nativeGeo && !nativeGeo.permission ? `<div class="note warn" style="margin-bottom:10px">Android needs location set to <b>“Allow all the time”</b> for background attendance. <button class="btn sm" data-act="geo-settings" style="margin-top:8px">Open app settings</button></div>` : ''}
+        ${!NATIVE ? '<div class="note" style="margin-bottom:10px">📱 In the browser, tracking only works while this page is open. The <b>Android app</b> tracks in the background.</div>' : ''}
         <p class="small muted">Only the <b>EEE</b> and <b>CSE</b> buildings count — not the whole campus. If you are inside either building at any point during a class, that class is marked <b style="color:var(--good)">present</b>; if tracking was on for the whole class and you never entered, it is marked <b style="color:var(--bad)">absent</b>. Manual marks always win.</p>
         <div id="map" class="map"></div>
         ${st.fences.map((f, i) => `<div class="fence-row"><div><b>${esc(f.name)}</b><div class="small muted mono">${f.lat.toFixed(5)}, ${f.lng.toFixed(5)} · radius ${f.r} m</div><input type="range" min="15" max="120" value="${f.r}" data-act-input="fence-r" data-i="${i}" style="width:100%;accent-color:var(--accent)"></div>
@@ -752,7 +757,7 @@
       const circle = L.circle([f.lat, f.lng], { radius: f.r, color: cols[i % 2], weight: 2, fillOpacity: 0.18 }).addTo(map);
       const m = L.marker([f.lat, f.lng], { draggable: true, title: f.name }).addTo(map).bindTooltip(f.name, { permanent: true, direction: 'top', offset: [-14, -14] });
       m.on('drag', (e) => circle.setLatLng(e.target.getLatLng()));
-      m.on('dragend', (e) => { const p = e.target.getLatLng(); f.lat = p.lat; f.lng = p.lng; save(); toast(`${f.name} moved`); render(); });
+      m.on('dragend', (e) => { const p = e.target.getLatLng(); f.lat = p.lat; f.lng = p.lng; save(); fencesChanged(); toast(`${f.name} moved`); render(); });
       mapLayers.push(circle, m);
     });
   }
@@ -770,6 +775,14 @@
   function fenceFor(fix) { for (const f of state.settings.fences) { const d = dist(fix, f); if (d - Math.min(fix.acc || 0, 25) <= f.r) return f; } return null; }
   function trackerState() {
     if (!state.settings.tracking) return { cls: '', label: 'Tracking off', detail: 'Off — attendance only by manual ticks' };
+    if (NATIVE) {
+      const g = nativeGeo;
+      if (!g) return { cls: 'on', label: 'Tracking', detail: 'Starting…' };
+      if (!g.permission) return { cls: '', label: 'Needs permission', detail: 'Location must be set to “Allow all the time”' };
+      if (!g.active) return { cls: '', label: 'Paused', detail: 'Background tracking is not running — toggle it off and on' };
+      const f = state.settings.fences.find((x) => x.id === g.inside);
+      return f ? { cls: 'on in', label: `In ${f.name.replace(' Building', '')}`, detail: `Inside the ${f.name} · works in the background` } : { cls: 'on', label: 'Tracking', detail: 'Background tracking on — works even when the app is closed' };
+    }
     if (!('geolocation' in navigator)) return { cls: '', label: 'No GPS', detail: 'This device has no location support' };
     if (!lastFix) return { cls: 'on', label: 'Locating…', detail: 'Waiting for a GPS fix (keep the app open)' };
     if (insideFence) return { cls: 'on in', label: `In ${insideFence.name.replace(' Building', '')}`, detail: `You are inside the ${insideFence.name}` };
@@ -821,6 +834,165 @@
     }
   }
 
+  /* ---------------- Cloud: Google login + sync ---------------- */
+  const CLOUD = window.ckCloud || { configured: false, onUser: (cb) => cb(null) };
+  const NATIVE = !!window.ckNative;
+  const GOOGLE_G = '<svg viewBox="0 0 48 48" style="width:18px;height:18px;stroke:none"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
+  let cloudUser = null, pushTimer = null, pendingRemote = null;
+  const cloudState = { busy: false, err: null };
+  const strHash = (s) => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return String(h >>> 0) + ':' + s.length; };
+  // Only this is synced. Device-only bits (tracking on/off, tracking periods, notification log) stay local.
+  function syncPayload() {
+    const { tracking, trackPeriods, ...settings } = state.settings; void tracking; void trackPeriods;
+    return JSON.stringify({ v: 1, onboarded: state.onboarded, active: state.active, semesters: state.semesters, settings });
+  }
+  const hasLocalData = () => state.onboarded && Object.keys(state.semesters).length > 0;
+  function scheduleCloud() { if (!cloudUser) return; clearTimeout(pushTimer); pushTimer = setTimeout(() => pushCloud(false), 2500); }
+  async function pushCloud(force) {
+    if (!cloudUser || pendingRemote) return;
+    const p = syncPayload(), h = strHash(p);
+    if (!force && h === state.syncedHash) return;
+    try {
+      cloudState.busy = true; const at = Date.now();
+      await CLOUD.push(JSON.parse(p), at);
+      state.syncedAt = at; state.syncedHash = h; cloudState.err = null; persist();
+    } catch (e) { cloudState.err = (e && e.message) || 'Sync failed'; }
+    cloudState.busy = false;
+    if (route === 'settings' && !$('#sheetWrap').classList.contains('open')) softRefresh();
+  }
+  function adoptRemote(remote) {
+    if (!remote || !remote.data) return;
+    const d = remote.data, keepTracking = state.settings.tracking, keepPeriods = state.settings.trackPeriods;
+    state.onboarded = !!d.onboarded; state.semesters = d.semesters || {};
+    state.active = d.active && state.semesters[d.active] ? d.active : Object.keys(state.semesters)[0] || null;
+    state.settings = Object.assign(defaults().settings, d.settings || {}, { tracking: keepTracking, trackPeriods: keepPeriods });
+    state.syncedAt = remote.updatedAt; state.syncedHash = strHash(syncPayload()); pendingRemote = null;
+    ui.routineWeek = null; ui.sylTab = null; persist(); scheduleNativeAlerts();
+    if (!state.onboarded || !S()) state.onboarded = false;
+    render();
+  }
+  async function cloudCheck(manual) {
+    if (!cloudUser) return;
+    try {
+      cloudState.busy = true; if (manual) softRefresh();
+      const remote = await CLOUD.pull();
+      const localH = strHash(syncPayload());
+      if (!remote || !remote.data) {
+        if (hasLocalData()) await pushCloud(true);
+        cloudState.busy = false; if (manual) toast('Backed up to Google', '☁'); if (!$('#sheetWrap').classList.contains('open')) softRefresh(); return;
+      }
+      const remoteH = strHash(JSON.stringify(remote.data));
+      const remoteChanged = remote.updatedAt > (state.syncedAt || 0), localChanged = localH !== state.syncedHash;
+      if (remoteH === localH) { state.syncedAt = remote.updatedAt; state.syncedHash = localH; persist(); }
+      else if (!hasLocalData() || (remoteChanged && !localChanged)) { adoptRemote(remote); toast(`Welcome back${cloudUser.name ? ', ' + cloudUser.name.split(' ')[0] : ''} — data restored`, '☁'); }
+      else if (!remoteChanged && localChanged) await pushCloud(true);
+      else { pendingRemote = remote; conflictSheet(remote); }
+      cloudState.err = null;
+      if (manual) toast('Synced', '☁');
+    } catch (e) { cloudState.err = (e && e.message) || 'Sync failed'; if (manual) toast('Sync failed — check internet', '!'); }
+    cloudState.busy = false;
+    if (!$('#sheetWrap').classList.contains('open')) softRefresh();
+  }
+  function conflictSheet(remote) {
+    const d = remote.data || {}, sems = Object.values(d.semesters || {});
+    const cnt = (list) => list.reduce((a, x) => a + Object.keys(x.records || {}).length, 0);
+    openSheet(`<h3>Which data should we keep?</h3><p class="muted small">Your Google account and this device both have classkoytay data, and they are different.</p>
+      <div class="card" style="margin-top:10px"><b>☁ Google account</b><div class="small muted">Saved ${new Date(remote.updatedAt).toLocaleString()} · ${sems.length} semester(s) · ${cnt(sems)} attendance marks</div></div>
+      <div class="card"><b>📱 This device</b><div class="small muted">${Object.keys(state.semesters).length} semester(s) · ${cnt(Object.values(state.semesters))} attendance marks</div></div>
+      <div class="acts"><button class="btn" data-act="sync-use-local">Keep this device</button><button class="btn primary" data-act="sync-use-cloud">Use Google data</button></div>`, () => { pendingRemote = null; });
+  }
+  async function cloudLogin() {
+    if (!CLOUD.configured) { toast('Login is not set up yet', '!'); return; }
+    try { cloudState.busy = true; const u = await CLOUD.signIn(); if (u) toast(`Signed in as ${u.email}`, '✓'); }
+    catch (e) { const m = String((e && (e.code || e.message)) || ''); if (!/cancel|closed-by-user|12501/i.test(m)) toast('Sign-in failed: ' + m.replace('auth/', ''), '!'); }
+    cloudState.busy = false;
+  }
+  function accountCard() {
+    if (!CLOUD.configured) return '';
+    if (!cloudUser) return `<h2 class="sec" style="--i:0">Account</h2><div class="card" style="--i:1"><div class="row"><span style="font-size:30px">☁️</span><div class="sp"><b>Back up with Google</b><div class="small muted">Sign in so your routine, attendance and CTs are saved to your Google account. New phone or reinstall — log in and everything comes back.</div></div></div>
+      <button class="btn block" style="margin-top:12px;background:#fff;color:#1f1f1f;border-color:#dadce0" data-act="cloud-login">${GOOGLE_G} Sign in with Google</button></div>`;
+    const when = state.syncedAt ? new Date(state.syncedAt).toLocaleString() : 'not yet';
+    return `<h2 class="sec" style="--i:0">Account</h2><div class="card" style="--i:1"><div class="row">
+        ${cloudUser.photo ? `<img src="${esc(cloudUser.photo)}" alt="" referrerpolicy="no-referrer" style="width:42px;height:42px;border-radius:50%">` : '<span style="font-size:30px">👤</span>'}
+        <div class="sp"><b>${esc(cloudUser.name || 'Signed in')}</b><div class="small muted">${esc(cloudUser.email)}</div></div></div>
+      <div class="row small" style="margin-top:10px"><span class="tag ${cloudState.err ? 'bad' : 'good'}">${cloudState.busy ? 'Syncing…' : cloudState.err ? 'Sync error' : '☁ Synced'}</span><span class="muted">${cloudState.err ? esc(cloudState.err) : 'Last saved ' + when}</span></div>
+      <div class="row wrap" style="margin-top:12px"><button class="btn sm" data-act="cloud-sync">Sync now</button><button class="btn sm danger" data-act="cloud-logout">Sign out</button></div></div>`;
+  }
+
+  /* ---------------- Native Android: notifications + background geofence ---------------- */
+  let nativeNotifOk = false, nativeGeo = null, nativeAlertTimer = null, fenceTimer = null, reconciling = false;
+  function scheduleNativeAlerts() {
+    if (!NATIVE) return; clearTimeout(nativeAlertTimer);
+    nativeAlertTimer = setTimeout(() => { window.ckNative.schedule(state.settings.notify && nativeNotifOk && state.onboarded && S() ? plannedAlerts(10) : []).catch(() => {}); }, 1500);
+  }
+  async function nativeRefresh() { if (!NATIVE) return; try { nativeGeo = await window.ckNative.geoStatus(); } catch { nativeGeo = null; } nativeReconcile(); }
+  async function nativeRequestBackground() {
+    try { const p = await window.ckNative.requestBackground(); if (p.background !== 'granted') { toast('Choose “Allow all the time” for Location', '!'); window.ckNative.openSettings(); return false; } return true; }
+    catch { window.ckNative.openSettings(); return false; }
+  }
+  async function nativeTrackStart() {
+    const nn = window.ckNative;
+    try {
+      let p = await nn.geoPermissions();
+      if (p.location !== 'granted') p = await nn.requestForeground();
+      if (p.location !== 'granted') { toast('Location permission is needed', '!'); state.settings.tracking = false; save(); render(); return; }
+      if (p.background !== 'granted') {
+        openSheet(`<h3>One more step</h3><p class="muted">To count attendance while the app is closed, Android needs Location set to <b>“Allow all the time”</b>. classkoytay only checks whether you are inside the EEE or CSE building — your location is never uploaded.</p>
+          <div class="acts"><button class="btn primary" data-act="geo-allow-bg">Continue</button></div>`, () => render());
+        return;
+      }
+      await nativeTrackFinish();
+    } catch (e) { toast('Could not start tracking: ' + ((e && e.message) || e), '!'); }
+  }
+  async function nativeTrackFinish() {
+    try {
+      const r = await window.ckNative.startGeofence(state.settings.fences);
+      const per = state.settings.trackPeriods || (state.settings.trackPeriods = []);
+      if (!per.length || per[per.length - 1].to) per.push({ from: r.armedAt, to: null });
+      state.settings.tracking = true; save(); toast('Background attendance is on 📡', '✓');
+    } catch (e) { state.settings.tracking = false; save(); toast(/permission/i.test((e && e.message) || '') ? 'Needs “Allow all the time” location' : 'Could not start tracking', '!'); }
+    await nativeRefresh(); render();
+  }
+  async function nativeTrackStop() {
+    try { await window.ckNative.stopGeofence(); } catch { /* ignore */ }
+    const per = state.settings.trackPeriods || []; if (per.length && !per[per.length - 1].to) per[per.length - 1].to = Date.now();
+    state.settings.tracking = false; save(); await nativeRefresh(); render();
+  }
+  function fencesChanged() {
+    if (!NATIVE || !state.settings.tracking) return; clearTimeout(fenceTimer);
+    fenceTimer = setTimeout(() => window.ckNative.startGeofence(state.settings.fences).then(nativeRefresh).catch(() => {}), 1200);
+  }
+  // Turn the building enter/exit log (recorded by Android even while the app was closed) into attendance
+  async function nativeReconcile() {
+    if (!NATIVE || reconciling || !state.onboarded || !S()) return;
+    const per = state.settings.trackPeriods || []; if (!per.length) return;
+    reconciling = true;
+    try {
+      const events = (await window.ckNative.geoEvents()).sort((a, b) => a.t - b.t);
+      const nowMs = now().getTime(), ivals = []; let openAt = null;
+      for (const e of events) {
+        if (e.id === '_system') { if ((e.type === 'boot' || e.type === 'stopped') && openAt != null) { ivals.push([openAt, e.t]); openAt = null; } continue; }
+        if (e.type === 'enter' && openAt == null) openAt = e.t;
+        else if (e.type === 'exit' && openAt != null) { ivals.push([openAt, e.t]); openAt = null; }
+      }
+      if (openAt != null) ivals.push([openAt, nowMs]);
+      const covered = (a, b) => per.some((x) => x.from <= a && (x.to == null || x.to >= b));
+      const sem = S(), first = Math.min(...per.map((x) => x.from));
+      let nP = 0, nA = 0;
+      for (const i of allInstances(sem)) {
+        const ws = i.start.getTime() - 10 * 60000, we = i.end.getTime();
+        if (we < first || ws > nowMs) continue;
+        const rec = sem.records[i.key];
+        if ((rec && rec.src !== 'gps') || statusOf(i, sem) === 'OFF') continue;
+        const inside = ivals.some(([a, b]) => a <= we && b >= ws);
+        if (inside) { if (!rec || rec.s !== 'P') { setStatus(i, 'P', 'gps', sem); nP++; } }
+        else if (we <= nowMs && covered(ws, we) && !rec) { setStatus(i, 'A', 'gps', sem); nA++; }
+      }
+      if (nP || nA) { save(); toast(`Auto attendance: ${nP ? nP + ' present' : ''}${nP && nA ? ', ' : ''}${nA ? nA + ' absent' : ''}`, '📡'); softRefresh(); }
+    } catch { /* ignore */ }
+    reconciling = false;
+  }
+
   /* ---------------- Notifications ---------------- */
   let swReg = null;
   function plannedAlerts(horizonDays = 8) {
@@ -845,6 +1017,7 @@
     try { if (swReg) await swReg.showNotification(a.title, opts); else new Notification(a.title, opts); } catch { /* ignore */ }
   }
   function notifyTick() {
+    if (NATIVE) return; // Android schedules real notifications instead
     if (!state.settings.notify || !('Notification' in window) || Notification.permission !== 'granted') return;
     const t = now().getTime();
     for (const a of plannedAlerts(2)) {
@@ -863,6 +1036,11 @@
     } catch { /* ignore */ }
   }
   async function enableNotifications(on) {
+    if (NATIVE) {
+      if (!on) { state.settings.notify = false; save(); await window.ckNative.schedule([]); render(); return; }
+      const ok = await window.ckNative.notifyPermission(); nativeNotifOk = ok;
+      state.settings.notify = ok; save(); toast(ok ? 'Reminders on — they ring even when the app is closed' : 'Notification permission not granted', ok ? '🔔' : '!'); render(); return;
+    }
     if (!on) { state.settings.notify = false; save(); return; }
     if (!('Notification' in window)) { toast('Notifications not supported in this browser', '!'); return render(); }
     const p = await Notification.requestPermission();
@@ -918,6 +1096,13 @@
         state.onboarded = true; save(); ui.routineMode = filled ? 'week' : 'template'; go(filled ? 'today' : 'routine'); render(); toast('Welcome to classkoytay 🎉', '★'); break;
       }
       case 'sem-sheet': semSheet(); break;
+      case 'cloud-login': cloudLogin(); break;
+      case 'cloud-logout': if (confirm('Sign out? Your data stays on this device.')) { await CLOUD.signOut(); toast('Signed out'); } break;
+      case 'cloud-sync': await cloudCheck(true); break;
+      case 'sync-use-cloud': { const r = pendingRemote; sheetOnClose = null; closeSheet(); adoptRemote(r); toast('Loaded your data from Google', '☁'); break; }
+      case 'sync-use-local': sheetOnClose = null; pendingRemote = null; closeSheet(); await pushCloud(true); toast('Saved this device to Google', '☁'); break;
+      case 'geo-settings': window.ckNative.openSettings(); break;
+      case 'geo-allow-bg': { sheetOnClose = null; closeSheet(); const ok = await nativeRequestBackground(); if (ok) await nativeTrackFinish(); break; }
       case 'sem-switch': state.active = el.dataset.id; ui.routineWeek = null; ui.sylTab = null; save(); closeSheet(); render(); toast(`Switched to ${S().label}`); break;
       case 'ns-level': ns.level = el.dataset.v; ns.source = defaultSource(ns.level); drawNewSem(); break;
       case 'ns-sec': ns.section = el.dataset.v; drawNewSem(); break;
@@ -990,13 +1175,13 @@
       case 'wk-save': { const sat = saturdayOf(parseISO($('#wkSat').value || ctDraft._sat)); sem.startDate = iso(addDays(sat, -(ctDraft._w - 1) * 7)); ui.routineWeek = null; save(); closeSheet(); softRefresh(); toast(`Week ${ctDraft._w} starts ${fmtD(sat)}`); break; }
       case 'new-sem': newSemSheet(el.dataset.v || null); break;
       case 'del-sem': if (Object.keys(state.semesters).length < 2) { toast('Create another semester first', '!'); break; } if (confirm(`Delete ${sem.label} with all its attendance and CTs?`)) { delete state.semesters[sem.id]; state.active = Object.keys(state.semesters)[0]; save(); render(); } break;
-      case 'test-notif': if (!('Notification' in window) || Notification.permission !== 'granted') { await enableNotifications(true); } if (Notification.permission === 'granted') { const a = plannedAlerts(7).find((x) => x.id.startsWith('dg-')); showNotif(a || { title: 'classkoytay', body: 'Notifications are working 🎉', tag: 'test' }); } break;
+      case 'test-notif': if (NATIVE) { if (!nativeNotifOk) await enableNotifications(true); if (nativeNotifOk) { const a = plannedAlerts(7).find((x) => x.id.startsWith('dg-')); await window.ckNative.notifyNow(a ? a.title : 'classkoytay', a ? a.body : 'Notifications are working 🎉'); toast('Test sent'); } break; } if (!('Notification' in window) || Notification.permission !== 'granted') { await enableNotifications(true); } if (Notification.permission === 'granted') { const a = plannedAlerts(7).find((x) => x.id.startsWith('dg-')); showNotif(a || { title: 'classkoytay', body: 'Notifications are working 🎉', tag: 'test' }); } break;
       case 'export-ics': exportICS(); break;
       case 'fence-here': {
         const f = state.settings.fences[Number(el.dataset.i)];
         if (!('geolocation' in navigator)) { toast('Location not supported', '!'); break; }
         el.textContent = 'Locating…';
-        navigator.geolocation.getCurrentPosition((p) => { f.lat = p.coords.latitude; f.lng = p.coords.longitude; save(); toast(`${f.name} set (±${Math.round(p.coords.accuracy)} m)`, '📍'); render(); }, () => { toast('Could not get location', '!'); render(); }, { enableHighAccuracy: true, timeout: 20000 });
+        navigator.geolocation.getCurrentPosition((p) => { f.lat = p.coords.latitude; f.lng = p.coords.longitude; save(); fencesChanged(); toast(`${f.name} set (±${Math.round(p.coords.accuracy)} m)`, '📍'); render(); }, () => { toast('Could not get location', '!'); render(); }, { enableHighAccuracy: true, timeout: 20000 });
         break;
       }
       case 'theme': state.settings.theme = el.dataset.v; save(); render(); break;
@@ -1028,30 +1213,33 @@
       case 'beforeT': state.settings.beforeMin = Number(t.value); save(); break;
       case 'ctMorningT': state.settings.ctMorning = t.checked; save(); break;
       case 'unmarkedT': state.settings.unmarkedAs = t.value; save(); renderTop(); break;
-      case 'trackT': state.settings.tracking = t.checked; save(); if (t.checked) { startTracking(); toast('Tracking on — keep classkoytay open during class', '📡'); } else stopTracking(); render(); break;
+      case 'trackT':
+        if (NATIVE) { if (t.checked) nativeTrackStart(); else nativeTrackStop(); break; }
+        state.settings.tracking = t.checked; save(); if (t.checked) { startTracking(); toast('Tracking on — keep classkoytay open during class', '📡'); } else stopTracking(); render(); break;
       case 'importF': { const f = t.files[0]; if (!f) break; f.text().then((txt) => { try { const d = JSON.parse(txt); if (!d.semesters) throw 0; state = Object.assign(defaults(), d); save(); toast('Backup restored'); render(); } catch { toast('Not a classkoytay backup', '!'); } }); break; }
     }
   });
   document.addEventListener('input', (e) => {
     const t = e.target;
     if (t.id === 'sylQ') { ui.sylQ = t.value; const pos = t.selectionStart; clearTimeout(t._d); t._d = setTimeout(() => { render(); const n = $('#sylQ'); n.focus(); n.setSelectionRange(pos, pos); }, 180); }
-    if (t.dataset.actInput === 'fence-r') { const f = state.settings.fences[Number(t.dataset.i)]; f.r = Number(t.value); t.previousElementSibling.textContent = `${f.lat.toFixed(5)}, ${f.lng.toFixed(5)} · radius ${f.r} m`; clearTimeout(t._d); t._d = setTimeout(() => { save(); drawFences(); }, 120); }
+    if (t.dataset.actInput === 'fence-r') { const f = state.settings.fences[Number(t.dataset.i)]; f.r = Number(t.value); t.previousElementSibling.textContent = `${f.lat.toFixed(5)}, ${f.lng.toFixed(5)} · radius ${f.r} m`; clearTimeout(t._d); t._d = setTimeout(() => { save(); drawFences(); fencesChanged(); }, 400); }
     if (t.matches('[data-ct]')) ctDraft[t.dataset.ct] = t.value;
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (state.settings.tracking) requestWake(); tick(); softRefresh(); } });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (state.settings.tracking && !NATIVE) requestWake(); onResume(); } });
+  function onResume() { tick(); nativeRefresh(); if (cloudUser) cloudCheck(false); softRefresh(); }
 
   /* ---------------- clock ---------------- */
   let lastMinute = -1;
   function tick() {
     if (!state.onboarded || !S()) return;
-    notifyTick(); closeOutClasses();
+    notifyTick(); if (!NATIVE) closeOutClasses(); else nativeReconcile();
     const m = Math.floor(now().getTime() / 60000);
     if (m !== lastMinute) { lastMinute = m; if (route === 'today' && !$('#sheetWrap').classList.contains('open')) softRefresh(); else renderTop(); }
   }
 
   /* ---------------- boot ---------------- */
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  if (!NATIVE && 'serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').then((r) => { swReg = r; }).catch(() => {});
     navigator.serviceWorker.addEventListener?.('message', () => {});
   }
@@ -1065,7 +1253,16 @@
   window.addEventListener('hashchange', takeImportFromHash);
   const h = location.hash.slice(1).split('/'); route = h[0] || 'today'; routeArg = h[1] ? decodeURIComponent(h[1]) : null;
   if (!takeImportFromHash()) render();
-  if (state.settings.tracking && state.onboarded) startTracking();
+  if (state.settings.tracking && state.onboarded && !NATIVE) startTracking();
+  CLOUD.onUser((u) => { const was = cloudUser && cloudUser.uid; cloudUser = u; if (u && u.uid !== was) cloudCheck(false); else if (!u) render(); else renderTop(); });
+  if (NATIVE) {
+    const nn = window.ckNative;
+    nn.notifyGranted().then((ok) => { nativeNotifOk = ok; if (ok && state.settings.notify) scheduleNativeAlerts(); });
+    nn.onResume(onResume);
+    nn.onNotificationTap((url) => { location.hash = url.replace(/^.*#/, ''); });
+    nn.onBack(() => { if ($('#sheetWrap').classList.contains('open')) closeSheet(); else if (route !== 'today' && state.onboarded) go('today'); else nn.exitApp(); });
+    nativeRefresh();
+  }
   setInterval(tick, 20000); setTimeout(tick, 1500);
 
   // Debug hooks (handy for testing geofence without walking to campus)

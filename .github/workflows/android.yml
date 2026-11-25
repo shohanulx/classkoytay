@@ -1,0 +1,68 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Build web app + sync Android project
+        run: |
+          node scripts/build-web.mjs
+          node node_modules/@capacitor/cli/bin/capacitor sync android
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Build signed release APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          CK_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          CK_VERSION_CODE: ${{ github.run_number }}
+          CK_VERSION_NAME: 1.${{ github.run_number }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::Add the KEYSTORE_BASE64 and KEYSTORE_PASSWORD repository secrets"; exit 1; fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          export CK_KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/classkoytay.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: classkoytay-apk
+          path: classkoytay.apk
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.${{ github.run_number }}"
+          gh release create "$TAG" classkoytay.apk \
+            --title "classkoytay $TAG" \
+            --notes "Android app for RUET students. Download **classkoytay.apk** on your phone and open it to install (allow 'Install unknown apps' if asked). Built from ${GITHUB_SHA::7}." \
+            --latest

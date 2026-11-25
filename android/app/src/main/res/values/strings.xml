@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">classkoytay</string>
+    <string name="title_activity_main">classkoytay</string>
+    <string name="package_name">com.classkoytay.app</string>
+    <string name="custom_url_scheme">com.classkoytay.app</string>
+</resources>

@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "941055916238",
+    "project_id": "classkoytay",
+    "storage_bucket": "classkoytay.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:941055916238:android:6ab23b6f6b26868e6c389f",
+        "android_client_info": {
+          "package_name": "com.classkoytay.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "941055916238-brn49q945j4plrprgghikokpd7ifa56u.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.classkoytay.app",
+            "certificate_hash": "a6a0f7afb3379987216b6482ddcc012f2476c45f"
+          }
+        },
+        {
+          "client_id": "941055916238-lfnudfie9uadtumsohlguq9v3gnfme92.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDmWiceghDevKPL_SwyyRB3x8rCtrMzRWI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "941055916238-lfnudfie9uadtumsohlguq9v3gnfme92.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
