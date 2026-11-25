@@ -39,8 +39,8 @@ jobs:
 
       - name: Build signed release APK
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          CK_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_B64 || secrets.KEYSTORE_BASE64 }}
+          CK_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASS || secrets.KEYSTORE_PASSWORD }}
           CK_VERSION_CODE: ${{ github.run_number }}
           CK_VERSION_NAME: 1.${{ github.run_number }}
         run: |
