@@ -46,10 +46,8 @@ jobs:
         run: |
           if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::Add the KEYSTORE_BASE64 and KEYSTORE_PASSWORD repository secrets"; exit 1; fi
           # Diagnostics (lengths only, never values): key text should be 3544 chars, password 24
-          echo "KEYSTORE_BASE64 length: $(printf '%s' "$KEYSTORE_BASE64" | tr -d ' 
-	' | wc -c) (expected 3544)"
-          echo "KEYSTORE_PASSWORD length: $(printf '%s' "$CK_KEYSTORE_PASSWORD" | tr -d '
-' | wc -c) (expected 24)"
+          echo "KEYSTORE_BASE64 length: $(printf '%s' "$KEYSTORE_BASE64" | tr -d ' \r\n\t' | wc -c) (expected 3544)"
+          echo "KEYSTORE_PASSWORD length: $(printf '%s' "$CK_KEYSTORE_PASSWORD" | tr -d '\r\n' | wc -c) (expected 24)"
           # Strip any spaces / line breaks that sneak in when pasting the secret
           printf '%s' "$KEYSTORE_BASE64" | tr -d ' \r\n\t' | base64 -d > "$RUNNER_TEMP/release.jks"
           export CK_KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
