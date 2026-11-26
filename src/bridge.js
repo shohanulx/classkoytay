@@ -4,6 +4,8 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { App } from '@capacitor/app';
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { initializeApp } from 'firebase/app';
 import { getAuth, initializeAuth, indexedDBLocalPersistence, browserLocalPersistence, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signInWithCredential, onAuthStateChanged, signOut as fbSignOut } from 'firebase/auth';
@@ -102,6 +104,12 @@ window.ckNative = !isNative ? null : {
   onResume(cb) { App.addListener('resume', cb); },
   onBack(cb) { App.addListener('backButton', cb); },
   exitApp() { App.exitApp(); },
+  /** Save a file (base64 data) and open Android's share sheet so it can be saved to Files/Drive or sent */
+  async shareFile(name, base64, title) {
+    const r = await Filesystem.writeFile({ path: name, data: base64, directory: Directory.Cache });
+    await Share.share({ title: title || name, files: [r.uri], dialogTitle: title || 'Save or share' });
+    return r.uri;
+  },
   onNotificationTap(cb) { LocalNotifications.addListener('localNotificationActionPerformed', (e) => cb(e.notification?.extra?.url || '#today')); },
 };
 

@@ -17,5 +17,5 @@ await build({
 const dist = join(root, 'dist');
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist);
-for (const f of ['index.html', 'manifest.webmanifest', 'sw.js', 'css', 'js', 'icons']) cpSync(join(root, f), join(dist, f), { recursive: true });
+for (const f of ['index.html', 'manifest.webmanifest', 'sw.js', 'css', 'js', 'icons', 'img']) cpSync(join(root, f), join(dist, f), { recursive: true });
 console.log('web build → dist/');
